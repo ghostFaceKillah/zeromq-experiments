@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package carla;
+
+
+// Message coming from worker to the master
+message Frame {
+    bytes observation = 1;
+    double reward = 2;
+    int32 action = 3;
+    double value = 4;
+    int32 client_id = 5;
+}
+
+message FrameBatch {
+    repeated Frame frame = 1;
+}
+
+message FrameResponse {
+}
+
+
+// Message from master to the worker
+message Network {
+    int32 version = 1;
+}
+
+// Initialization request/response
+message InitializationRequest {
+}
+
+message InitializationResponse {
+    int32 id = 1;
+    int32 steps = 2;
+}
