@@ -1,9 +1,7 @@
 import argparse
 import collections
-import threading
 import zmq
 
-import carla.master.constants as cnst
 import carla.messages.message_pb2 as pb
 
 
