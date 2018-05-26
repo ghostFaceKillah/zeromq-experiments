@@ -4,6 +4,60 @@ import gym
 
 import carla.messages.message_pb2 as pb
 
+class WorkerConnection:
+    def __init__(self, frame_port, network_port, interface):
+        context = zmq.Context()
+
+        self.network_socket = context.socket(zmq.SUB)
+        self.network_socket.connect('{}:{}'.format(interface, network_port))
+        self.network_socket.setsockopt(zmq.SUBSCRIBE, b'')
+
+        self.frame_socket = context.socket(zmq.REQ)
+        self.frame_socket.connect('{}:{}'.format(interface, frame_port))
+
+        # received during initialization dance
+        self.config = None
+        self.client_id = None
+
+    def initialization_dance(self):
+        initialization_request = pb.InitializationRequest()
+        self.frame_socket.send(initialization_request.SerializeToString())
+
+        print("Worker: awaiting initialization")
+        response = pb.InitializationResponse()
+        response.ParseFromString(self.frame_socket.recv())
+        print("Worker: initialized")
+
+        self.config = response
+        self.client_id = self.config.id
+
+        return response
+
+    def receive_network(self):
+        print("Worker: awaiting network")
+        network = pb.Network()
+        network.ParseFromString(self.network_socket.recv())
+        print("Worker: received network version: {}".format(network.version))
+
+        return network
+
+    def send_frame(self, observation, reward, action, value, network_version):
+        frame = pb.Frame(
+            observation=observation.tobytes(),
+            reward=reward,
+            action=action,
+            value=value,
+            client_id=self.client_id
+        )
+
+        print("Worker: sending frame with network version: {}".format(network_version))
+        self.frame_socket.send(frame.SerializeToString())
+        self.frame_socket.recv()  # Discard the response
+
+
+def policy(env):
+    return env.action_space.sample(), 0.0
+
 
 def main():
     """ Initialize and run worker program. Connect to master and download initialization parameters """
@@ -14,60 +68,34 @@ def main():
     parser.add_argument('--interface', default="tcp://localhost", help='Interface to connect to')
 
     args = parser.parse_args()
-    context = zmq.Context()
 
-    network_socket = context.socket(zmq.SUB)
-    network_socket.connect('{}:{}'.format(args.interface, args.network_port))
-    network_socket.setsockopt(zmq.SUBSCRIBE, b'')
+    connection = WorkerConnection(
+        frame_port=args.frame_port,
+        network_port=args.network_port,
+        interface=args.interface
+    )
 
-    frame_socket = context.socket(zmq.REQ)
-    frame_socket.connect('{}:{}'.format(args.interface, args.frame_port))
+    config = connection.initialization_dance()
+    env_steps = config.steps
 
-    initialization_request = pb.InitializationRequest()
-
-    frame_socket.send(initialization_request.SerializeToString())
-
-    print("Worker: awaiting initialization")
-    response = pb.InitializationResponse()
-    response.ParseFromString(frame_socket.recv())
-    print("Worker: initialized")
-
-    worker_function(response, network_socket, frame_socket)
-
-
-def policy(env):
-    return env.action_space.sample(), 0.0
-
-
-def worker_function(initialization, network_socket, frame_socket):
-    """
-    Download a network and perform learning updates
-    """
     env = gym.make("BreakoutNoFrameskip-v4")
     env.reset()
 
     while True:
-        print("Worker: awaiting network")
-        network = pb.Network()
-        network.ParseFromString(network_socket.recv())
-        print("Worker: received network version: {}".format(network.version))
+        network = connection.receive_network()
 
         # This is how many steps of the env the server wants
-        for i in range(initialization.steps):
+        for i in range(env_steps):
             next_action, current_value = policy(env)
             observation, reward, done, info = env.step(next_action)
 
-            frame = pb.Frame(
-                observation=observation.tobytes(),
+            connection.send_frame(
+                observation=observation,
                 reward=reward,
                 action=next_action,
                 value=current_value,
-                client_id=initialization.id
+                network_version=network.version
             )
-
-            print("Worker: sending frame with network version: {}".format(network.version))
-            frame_socket.send(frame.SerializeToString())
-            frame_socket.recv()  # Discard the response
 
 
 if __name__ == '__main__':
